@@ -3,3 +3,7 @@ dummy:
     _target_: llava.data.DummyDataset
     num_instances: 10000
     comments: dummy dataset for testing
+JRDB:
+    _target_: llava.data.LLaVADataset
+    data_path: /media/data/FTDataset/flattened_dataset/dataset.json
+    media_dir: /media/data/FTDataset/flattened_dataset/images

@@ -76,8 +76,9 @@ class LlavaMetaModel(ABC):
         self.mm_projector = build_mm_projector(mm_projector_cfg, config)
 
         self.encoders = {}
-        for name in ["image", "video"]:
+        for name in ["image"]:
             config = getattr(self.config, f"{name}_encoder")
+            print(config)
             if isinstance(config, str):
                 config = json.loads(config)
             self.encoders[name] = instantiate(config, parent=self)
