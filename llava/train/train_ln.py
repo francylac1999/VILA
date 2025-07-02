@@ -440,7 +440,7 @@ def train():
 
         bnb_model_from_pretrained_args.update(
             dict(
-                device_map={"": training_args.device},
+                #device_map={"": training_args.device},
                 # load_in_4bit=training_args.bits == 4,
                 # load_in_8bit=training_args.bits == 8,
                 quantization_config=BitsAndBytesConfig(
