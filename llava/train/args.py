@@ -265,5 +265,9 @@ class TrainingArguments(transformers.TrainingArguments):
         default=False,
         metadata={"help": "Whether enter debug mode."},
     )
+    warmup_steps: int = field(
+        default=1500,
+        metadata={"help": "Number of steps for the warmup in the loss function."},
+    )
 
 

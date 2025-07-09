@@ -853,5 +853,126 @@ class LLaVATrainer(Trainer):
                     json.dump(self.state.log_history, f, indent=4)
 
         self.control = self.callback_handler.on_log(self.args, self.state, self.control, logs)
+    import json
+'''
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """
+        Custom loss function that combines standard label smoothing loss
+        with a structured loss over decoded priority and availability.
+        """
+        # Estrai le label (se presenti)
+        if self.label_smoother is not None and "labels" in inputs:
+            labels = inputs.pop("labels")
+        else:
+            labels = None
+
+        # Output del modello
+        outputs = model(**inputs)
+
+        # Decodifica la risposta testuale del modello (es. JSON con priority e availability)
+        response = model.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+
+        # Salva lo stato se richiesto
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        # === Loss standard ===
+        if labels is not None:
+            unwrapped_model = self.accelerator.unwrap_model(model)
+            if _is_peft_model(unwrapped_model):
+                model_name = unwrapped_model.base_model.model._get_name()
+            else:
+                model_name = unwrapped_model._get_name()
+            if model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
+                loss = self.label_smoother(outputs, labels, shift_labels=True)
+            else:
+                loss = self.label_smoother(outputs, labels)
+        else:
+            if isinstance(outputs, dict) and "loss" not in outputs:
+                raise ValueError(
+                    "The model did not return a loss from the inputs, only the following keys: "
+                    f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
+                )
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+
+        # === Loss aggiuntiva: Priority + Availability ===
+        try:
+            parsed = json.loads(response)
+            pred_priority = [parsed["priority"]]  # batch di 1
+            pred_availability = [parsed["availability"]]
+            gt_priority = [labels["priority"]]
+            gt_availability = [labels["availability"]]
+
+            aux_loss_fn = PriorityAvailabilityAuxLoss(weight_priority=1.0, weight_availability=1.0)
+            aux_loss = aux_loss_fn(pred_priority, pred_availability, gt_priority, gt_availability)
+            loss += aux_loss
+
+        except Exception as e:
+            print(f"[WARNING] Could not parse model output as JSON: '{response}'\n{e}")
+            # loss remains unchanged
+
+        return (loss, outputs) if return_outputs else loss'''
 
 
+import torch
+import torch.nn as nn
+
+class PriorityAvailabilityAuxLoss(nn.Module):
+    def __init__(self, weight_priority=1.0, weight_availability=2.0, pad_value=0.0):
+        super().__init__()
+        self.weight_priority = weight_priority
+        self.weight_availability = weight_availability
+        self.bce = nn.BCELoss()
+        self.rank_loss = nn.MarginRankingLoss(margin=1.0)
+        self.pad_value = pad_value
+
+    def forward(self, pred_priority_list, pred_availability_list, gt_priority_list, gt_availability_list):
+        loss_avail = 0.0
+        loss_rank = 0.0
+        total_pairs = 0
+
+        #Availability Loss
+        max_len = max(len(pred_availability_list), len(gt_availability_list))
+
+        pred_av_tensor = torch.tensor(
+            pred_availability_list + [self.pad_value] * (max_len - len(pred_availability_list)),
+            dtype=torch.float32
+        )
+        gt_av_tensor = torch.tensor(
+            gt_availability_list + [self.pad_value] * (max_len - len(gt_availability_list)),
+            dtype=torch.float32
+        )
+
+        loss_avail += self.bce(pred_av_tensor, gt_av_tensor)
+
+        # Priority Loss
+
+        # Assure that both lists have the same length
+        if len(pred_priority_list) < len(gt_priority_list):
+            pred_priority_list = pred_priority_list + [pid for pid in gt_priority_list if pid not in pred_priority_list]
+
+        # Dictionary for ranks
+        pred_ranks = {pid: idx for idx, pid in enumerate(pred_priority_list)}
+        gt_ranks = {pid: idx for idx, pid in enumerate(gt_priority_list)}
+
+        for i in range(len(gt_priority_list)):
+            for j in range(i + 1, len(gt_priority_list)):
+                a, b = gt_priority_list[i], gt_priority_list[j]
+                total_pairs += 1  # We count each pair once
+
+                # Compare ranks
+                gt_cmp = gt_ranks[a] < gt_ranks[b]
+                pred_cmp = pred_ranks.get(a, float('inf')) < pred_ranks.get(b, float('inf'))
+
+                if gt_cmp != pred_cmp:
+                    ra = torch.tensor([-float(pred_ranks.get(a, len(pred_priority_list)))])
+                    rb = torch.tensor([-float(pred_ranks.get(b, len(pred_priority_list)))])
+                    target = torch.tensor([1.0]) if gt_cmp else torch.tensor([-1.0])
+                    loss_rank += self.rank_loss(ra, rb, target)
+
+        # Computation of average losses
+        avg_loss_avail = loss_avail
+        avg_loss_rank = loss_rank / total_pairs if total_pairs > 0 else torch.tensor(0.0)
+
+        # Weighted total loss
+        return self.weight_priority * avg_loss_rank + self.weight_availability * avg_loss_avail

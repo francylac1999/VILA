@@ -248,7 +248,7 @@ def training_step(
 
     return loss.detach() / self.args.gradient_accumulation_steps
 
-
+'''
 def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
     """
     How the loss is computed by Trainer. By default, all models return the loss in the first element.
@@ -293,7 +293,126 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
             )
         # We don't use .loss here since the model may return tuples instead of ModelOutput.
         loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+        print(f"[DEBUG] loss: {loss}")
 
     return (loss, outputs) if return_outputs else loss
+'''
+import json, re
+import torch
+from transformers.modeling_utils import unwrap_model
+from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
+from tinychat.utils.conversation_utils import gen_params, stream_output
+from tinychat.stream_generators.NVILA_stream_gen import NVILAStreamGenerator_from_ids
+from tinychat.stream_generators.llava_stream_gen import prepare_logits_processor
+from llava.train.llava_trainer import PriorityAvailabilityAuxLoss
 
+def compute_loss(
+    self,
+    model,
+    inputs,
+    return_outputs: bool = False,
+    num_items_in_batch: int | None = None,
+    current_step: int = 0,
+):
+    """
+    Combina la loss standard con una loss strutturata su
+    `priority` e `availability`, ottenute decodificando l’output JSON
+    generato dal modello.
+    """
+  
 
+    # --- Estrazione label ---
+    if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
+        labels = inputs.pop("labels")
+    else:
+        labels = None
+
+    # --- Batch size ---
+    if num_items_in_batch is not None:
+        n = torch.tensor(num_items_in_batch, device=self.args.device)
+        num_items_in_batch = int(self.accelerator.gather(n).sum().cpu())
+
+    if self.model_accepts_loss_kwargs:
+        loss_kwargs = {}
+        if num_items_in_batch is not None:
+            loss_kwargs["num_items_in_batch"] = num_items_in_batch
+        inputs = {**inputs, **loss_kwargs}
+
+    # --- Inputs ---
+    input_ids = inputs.get("input_ids", None)
+    input_ids = input_ids[0].tolist()
+
+    # --- Model forward ---
+    outputs = model(**inputs)
+    logits = outputs.get("logits", None)
+    output_ids = torch.argmax(logits, dim=-1)[0].tolist()  # greedy decoding
+
+    if self.args.past_index >= 0:
+        self._past = outputs[self.args.past_index]
+
+    # --- Unwrap tokenizer ---
+    unwrapped = self.accelerator.unwrap_model(model)
+    tokenizer = unwrapped.tokenizer
+
+    gt_response = tokenizer.decode(input_ids, skip_special_tokens=True).strip()
+    response = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+
+    #print(f"[DEBUG] GT response: {gt_response}")
+    #print(f"[DEBUG] Decoded response: {response}")
+
+    # --- Compute loss standard ---
+    if labels is not None:
+        if _is_peft_model(unwrapped):
+            model_name = unwrapped.base_model.model.__class__.__name__
+        else:
+            model_name = unwrapped.__class__.__name__
+
+        if self.compute_loss_func is not None:
+            loss = self.compute_loss_func(outputs, labels, num_items_in_batch=num_items_in_batch)
+        elif model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
+            loss = self.label_smoother(outputs, labels, shift_labels=True)
+        else:
+            loss = self.label_smoother(outputs, labels)
+    else:
+        if isinstance(outputs, dict) and "loss" not in outputs:
+            raise ValueError(f"Il modello non ha restituito una loss. Chiavi: {','.join(outputs.keys())}")
+        loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+
+    # --- Parsing JSON da response e gt_response ---
+    gt_priority = gt_availability = pred_priority = pred_availability = None
+
+    def extract_json(text):
+        """Estrai il primo oggetto JSON valido da una stringa"""
+        match = re.search(r'{.*?}', text, re.DOTALL)
+        return json.loads(match.group(0)) if match else None
+
+    try:
+        parsed_gt = extract_json(gt_response)
+        if parsed_gt:
+            gt_priority     = [parsed_gt["priority"]]
+            gt_availability = [parsed_gt["availability"]]
+    except Exception as e:
+        print(f"[WARNING] Parsing GT fallito: {e}")
+        #print(f"[WARNING] gt_response = {gt_response}")
+    print(f"[DEBUG] GT priority: {gt_priority}, GT availability: {gt_availability}")
+
+    try:
+        parsed = extract_json(response)
+        if parsed:
+            pred_priority     = [parsed["priority"]]
+            pred_availability = [parsed["availability"]]
+    except Exception as e:
+        print(f"[WARNING] Parsing predizione fallito: {e}")
+        #print(f"[WARNING] response = {response}")
+
+    # --- Loss aggiuntiva se parsing riuscito ---
+    if all(v is not None for v in [gt_priority, gt_availability, pred_priority, pred_availability]):
+        aux_loss_fn = PriorityAvailabilityAuxLoss(weight_priority=0.5, weight_availability=1.0)
+        aux_loss = aux_loss_fn(pred_priority, pred_availability, gt_priority, gt_availability)
+        alpha = min(1.0, current_step /self.args.warmup_steps)
+        loss += alpha * aux_loss
+        print(f"[DEBUG] Additional loss (aux_loss): {aux_loss}")
+    else:
+        print("[DEBUG] Salto aux_loss: parsing non riuscito.")
+
+    return (loss, outputs) if return_outputs else loss

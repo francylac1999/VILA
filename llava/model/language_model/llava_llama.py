@@ -154,7 +154,6 @@ class LlavaLlamaModel(LlavaMetaModel, LlavaMetaForCausalLM, PreTrainedModel):
 
         if dpo_forward:
             return outputs.logits, labels
-
         return outputs
 
 

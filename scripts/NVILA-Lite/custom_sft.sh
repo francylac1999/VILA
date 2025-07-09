@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DEFAULT_RUN_NAME="NVILA-Lite-2B-finetune-efficient-3-epochs-PIC4SER"
+DEFAULT_RUN_NAME="NVILA-Lite-2B-finetune-efficient-3-epochs-PIC4SER-new"
 DEFAULT_GLOBAL_TRAIN_BATCH_SIZE=1
 DEFAULT_GRADIENT_ACCUMULATION_STEPS=1
 

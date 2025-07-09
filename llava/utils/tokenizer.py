@@ -111,6 +111,7 @@ def tokenize_conversation(
         conversation,
         add_generation_prompt=add_generation_prompt,
         tokenize=False,
+        enable_thinking=True
     )
     return tokenizer_image_token(text, tokenizer, return_tensors="pt")
 
