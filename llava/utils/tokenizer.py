@@ -110,8 +110,7 @@ def tokenize_conversation(
     text = tokenizer.apply_chat_template(
         conversation,
         add_generation_prompt=add_generation_prompt,
-        tokenize=False,
-        enable_thinking=True
+        tokenize=False
     )
     return tokenizer_image_token(text, tokenizer, return_tensors="pt")
 

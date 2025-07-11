@@ -297,12 +297,12 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
 
     return (loss, outputs) if return_outputs else loss
 '''
+
 import json, re
 import torch
 from transformers.modeling_utils import unwrap_model
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 from tinychat.utils.conversation_utils import gen_params, stream_output
-from tinychat.stream_generators.NVILA_stream_gen import NVILAStreamGenerator_from_ids
 from tinychat.stream_generators.llava_stream_gen import prepare_logits_processor
 from llava.train.llava_trainer import PriorityAvailabilityAuxLoss
 
@@ -312,15 +312,13 @@ def compute_loss(
     inputs,
     return_outputs: bool = False,
     num_items_in_batch: int | None = None,
-    current_step: int = 0,
 ):
     """
     Combina la loss standard con una loss strutturata su
     `priority` e `availability`, ottenute decodificando l’output JSON
     generato dal modello.
     """
-  
-
+    current_step = self.state.global_step
     # --- Estrazione label ---
     if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
         labels = inputs.pop("labels")
@@ -346,7 +344,7 @@ def compute_loss(
     outputs = model(**inputs)
     logits = outputs.get("logits", None)
     output_ids = torch.argmax(logits, dim=-1)[0].tolist()  # greedy decoding
-
+    #print(f"[DEBUG] output_ids: {output_ids}")
     if self.args.past_index >= 0:
         self._past = outputs[self.args.past_index]
 
@@ -356,10 +354,7 @@ def compute_loss(
 
     gt_response = tokenizer.decode(input_ids, skip_special_tokens=True).strip()
     response = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
-
-    #print(f"[DEBUG] GT response: {gt_response}")
-    #print(f"[DEBUG] Decoded response: {response}")
-
+    #print(f"[DEBUG] Response: {response}")
     # --- Compute loss standard ---
     if labels is not None:
         if _is_peft_model(unwrapped):
@@ -379,7 +374,7 @@ def compute_loss(
         loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
 
     # --- Parsing JSON da response e gt_response ---
-    gt_priority = gt_availability = pred_priority = pred_availability = None
+    gt_priority = gt_availability = pred_priority = pred_availability = pred_logits_availability = None
 
     def extract_json(text):
         """Estrai il primo oggetto JSON valido da una stringa"""
@@ -389,30 +384,70 @@ def compute_loss(
     try:
         parsed_gt = extract_json(gt_response)
         if parsed_gt:
-            gt_priority     = [parsed_gt["priority"]]
-            gt_availability = [parsed_gt["availability"]]
+            gt_priority = parsed_gt["priority"]
+            gt_availability = parsed_gt["availability"]
+            print(f"[DEBUG] GT: {gt_priority}, {gt_availability}")
     except Exception as e:
         print(f"[WARNING] Parsing GT fallito: {e}")
-        #print(f"[WARNING] gt_response = {gt_response}")
-    print(f"[DEBUG] GT priority: {gt_priority}, GT availability: {gt_availability}")
+        # print(f"[WARNING] gt_response = {gt_response}")
 
     try:
         parsed = extract_json(response)
         if parsed:
-            pred_priority     = [parsed["priority"]]
-            pred_availability = [parsed["availability"]]
+            pred_priority = parsed["priority"]
+            pred_availability = parsed["availability"]
+            print(f"[DEBUG] Predizione: {pred_priority}, {pred_availability}")
+            match = re.search(r'"availability"\s*:\s*(\[[^\]]*\])', response)
+            if not match:
+                print("[WARNING] availability non trovata nel testo response con regex")
+                pred_logits_availability = None
+            else:
+                availability_str = match.group(1).replace("[", "").replace("]", "").replace(" ", "").replace(",", ", ").strip()
+                print(f"[DEBUG] availability_str: {availability_str}")
+                availability_token_ids = tokenizer.convert_tokens_to_ids(
+                    tokenizer.tokenize(availability_str)
+                )
+                print(f"[DEBUG] availability_token_ids: {availability_token_ids}")
+                # Funzione per trovare la prima occorrenza di availability_token_ids in output_ids
+                def find_sublist_index(lst, sublst):
+                    n, m = len(lst), len(sublst)
+                    for i in range(n - m + 1):
+                        if lst[i : i + m] == sublst:
+                            return i
+                    return -1
+
+                start_idx = find_sublist_index(output_ids, availability_token_ids)
+
+                if start_idx == -1:
+                    print("[WARNING] Sequenza token availability non trovata in output_ids")
+                    pred_logits_availability = None
+                else:
+                    pred_logits_availability = []
+                    for offset, token_id in enumerate(availability_token_ids):
+                        idx = start_idx + offset
+                        if token_id == 15:
+                           logit_val = 1 - logits[0, idx, token_id].item()/100 
+                        else:
+                            logit_val = logits[0, idx, token_id].item()/100
+                        if token_id not in [11, 220]:
+                            pred_logits_availability.append(logit_val)
+                            print(f"[DEBUG] Logit token {token_id} ('{tokenizer.decode([token_id])}') idx {idx}: {logit_val}")
+                        
+                    print(f"[DEBUG] Predicted Availability Logits: {pred_logits_availability}")
+
     except Exception as e:
         print(f"[WARNING] Parsing predizione fallito: {e}")
-        #print(f"[WARNING] response = {response}")
+        # print(f"[WARNING] response = {response}")
 
     # --- Loss aggiuntiva se parsing riuscito ---
-    if all(v is not None for v in [gt_priority, gt_availability, pred_priority, pred_availability]):
-        aux_loss_fn = PriorityAvailabilityAuxLoss(weight_priority=0.5, weight_availability=1.0)
-        aux_loss = aux_loss_fn(pred_priority, pred_availability, gt_priority, gt_availability)
-        alpha = min(1.0, current_step /self.args.warmup_steps)
+    if all(v is not None for v in [gt_priority, gt_availability, pred_priority, pred_logits_availability]):
+        aux_loss_fn = PriorityAvailabilityAuxLoss(weight_priority=0.5, weight_availability=0.01)
+        aux_loss = aux_loss_fn(pred_priority, pred_logits_availability, gt_priority, gt_availability)
+        alpha = min(1.0, current_step / self.args.warmup_steps)
+        print(f"[DEBUG] alpha: {alpha}")
         loss += alpha * aux_loss
         print(f"[DEBUG] Additional loss (aux_loss): {aux_loss}")
     else:
-        print("[DEBUG] Salto aux_loss: parsing non riuscito.")
+        print("[DEBUG] Salto aux_loss: parsing non riuscito o dati incompleti.")
 
     return (loss, outputs) if return_outputs else loss

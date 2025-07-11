@@ -933,27 +933,28 @@ class PriorityAvailabilityAuxLoss(nn.Module):
 
         #Availability Loss
         max_len = max(len(pred_availability_list), len(gt_availability_list))
-
+        device = pred_availability_list[0].device if isinstance(pred_availability_list[0], torch.Tensor) else 'cpu'
         pred_av_tensor = torch.tensor(
             pred_availability_list + [self.pad_value] * (max_len - len(pred_availability_list)),
-            dtype=torch.float32
+            dtype=torch.float32, device=device
         )
+        print(f"[DEBUG] Predicted Availability Tensor: {pred_av_tensor}")
         gt_av_tensor = torch.tensor(
             gt_availability_list + [self.pad_value] * (max_len - len(gt_availability_list)),
-            dtype=torch.float32
-        )
-
+            dtype=torch.float32, device=device
+        )        
+        print(f"[DEBUG] Ground Truth Availability Tensor: {gt_av_tensor}")
         loss_avail += self.bce(pred_av_tensor, gt_av_tensor)
-
-        # Priority Loss
+        print(f"[DEBUG] Availability Loss: {loss_avail.item()}")
+        '''# Priority Loss
 
         # Assure that both lists have the same length
         if len(pred_priority_list) < len(gt_priority_list):
             pred_priority_list = pred_priority_list + [pid for pid in gt_priority_list if pid not in pred_priority_list]
 
         # Dictionary for ranks
-        pred_ranks = {pid: idx for idx, pid in enumerate(pred_priority_list)}
-        gt_ranks = {pid: idx for idx, pid in enumerate(gt_priority_list)}
+        pred_ranks = {tuple(pid): idx for idx, pid in enumerate(pred_priority_list)}
+        gt_ranks = {tuple(pid): idx for idx, pid in enumerate(gt_priority_list)}
 
         for i in range(len(gt_priority_list)):
             for j in range(i + 1, len(gt_priority_list)):
@@ -965,14 +966,16 @@ class PriorityAvailabilityAuxLoss(nn.Module):
                 pred_cmp = pred_ranks.get(a, float('inf')) < pred_ranks.get(b, float('inf'))
 
                 if gt_cmp != pred_cmp:
-                    ra = torch.tensor([-float(pred_ranks.get(a, len(pred_priority_list)))])
-                    rb = torch.tensor([-float(pred_ranks.get(b, len(pred_priority_list)))])
-                    target = torch.tensor([1.0]) if gt_cmp else torch.tensor([-1.0])
+                    ra = torch.tensor([-float(pred_ranks.get(a, len(pred_priority_list)))], device=device)
+                    rb = torch.tensor([-float(pred_ranks.get(b, len(pred_priority_list)))], device=device)
+                    target = torch.tensor([1.0], device=device) if gt_cmp else torch.tensor([-1.0], device=device)
                     loss_rank += self.rank_loss(ra, rb, target)
 
-        # Computation of average losses
+        # Computation of average losses'''
         avg_loss_avail = loss_avail
-        avg_loss_rank = loss_rank / total_pairs if total_pairs > 0 else torch.tensor(0.0)
-
+        print(f"Average Availability Loss: {avg_loss_avail.item()}")
+        avg_loss_rank = 0
+        #avg_loss_rank = loss_rank / total_pairs if total_pairs > 0 else torch.tensor(0.0)
+        #print(f"Average Rank Loss: {avg_loss_rank.item()}")
         # Weighted total loss
         return self.weight_priority * avg_loss_rank + self.weight_availability * avg_loss_avail
