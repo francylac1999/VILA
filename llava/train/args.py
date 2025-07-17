@@ -212,7 +212,7 @@ class TrainingArguments(transformers.TrainingArguments):
     tune_mm_projector: bool = field(default=False)
     model_dtype: str = field(default="torch.bfloat16")
     model_max_length: int = field(
-        default=512,
+        default=4096,
         metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
     double_quant: bool = field(
@@ -266,7 +266,7 @@ class TrainingArguments(transformers.TrainingArguments):
         metadata={"help": "Whether enter debug mode."},
     )
     warmup_steps: int = field(
-        default=1500,
+        default=4272,
         metadata={"help": "Number of steps for the warmup in the loss function."},
     )
 

@@ -201,13 +201,13 @@ def training_step(
         self.optimizer.train()
 
     inputs = self._prepare_inputs(inputs)
+    #print(f"[DEBUG] inputs: {inputs}")
     if is_sagemaker_mp_enabled():
         loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
         return loss_mb.reduce_mean().detach().to(self.args.device)
 
     with self.compute_loss_context_manager():
         loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
-
     del inputs
     if (
         self.args.torch_empty_cache_steps is not None
@@ -248,12 +248,9 @@ def training_step(
 
     return loss.detach() / self.args.gradient_accumulation_steps
 
-'''
+"""
 def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-    """
-    How the loss is computed by Trainer. By default, all models return the loss in the first element.
-    Subclass and override for custom behavior.
-    """
+
     if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
         labels = inputs.pop("labels")
     else:
@@ -266,7 +263,20 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
         if num_items_in_batch is not None:
             loss_kwargs["num_items_in_batch"] = num_items_in_batch
         inputs = {**inputs, **loss_kwargs}
+        print(inputs.keys())
+
     outputs = model(**inputs)
+    '''print(f"debugoutputs.logits: {outputs.logits}")
+    print(f"debuglabels: {labels}")
+    unwrapped_model = self.accelerator.unwrap_model(model)
+    tokenizer = unwrapped_model.tokenizer if hasattr(unwrapped_model, "tokenizer") else None
+    if tokenizer is not None:
+        labels_list = labels[0].tolist()
+    # sostituisci -100 con tokenizer.pad_token_id oppure con un valore valido
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    clean_labels = [tok if tok != -100 else pad_token_id for tok in labels_list]
+    decoded_labels = tokenizer.decode(clean_labels, skip_special_tokens=True)
+    print(f"debugdecoded_labels: {decoded_labels}")'''
     # Save past state if it exists
     # TODO: this needs to be fixed and made cleaner later.
     if self.args.past_index >= 0:
@@ -274,15 +284,22 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
 
     if labels is not None:
         unwrapped_model = self.accelerator.unwrap_model(model)
-        if _is_peft_model(unwrapped_model):
-            model_name = unwrapped_model.base_model.model._get_name()
-        else:
-            model_name = unwrapped_model._get_name()
+        tokenizer = unwrapped_model.tokenizer if hasattr(unwrapped_model, "tokenizer") else None
+        if tokenizer is not None:
+        #if _is_peft_model(unwrapped_model):
+        #    model_name = unwrapped_model.base_model.model._get_name()
+        #else:
+        #    model_name = unwrapped_model._get_name()
         # User-defined compute_loss function
+            '''labels = torch.nn.utils.rnn.pad_sequence(labels,
+                                                    batch_first=True,
+                                                    padding_value=-100)
+            labels = labels[:, :tokenizer.model_max_length]
+        print(f"debuglabels after pad: {labels.size()}")'''
         if self.compute_loss_func is not None:
             loss = self.compute_loss_func(outputs, labels, num_items_in_batch=num_items_in_batch)
-        elif model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
-            loss = self.label_smoother(outputs, labels, shift_labels=True)
+        #elif model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
+        #    loss = self.label_smoother(outputs, labels, shift_labels=True)
         else:
             loss = self.label_smoother(outputs, labels)
     else:
@@ -293,11 +310,12 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
             )
         # We don't use .loss here since the model may return tuples instead of ModelOutput.
         loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
-        print(f"[DEBUG] loss: {loss}")
 
     return (loss, outputs) if return_outputs else loss
-'''
+"""
 
+
+'''
 import json, re
 import torch
 from transformers.modeling_utils import unwrap_model
@@ -305,7 +323,8 @@ from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_N
 from tinychat.utils.conversation_utils import gen_params, stream_output
 from tinychat.stream_generators.llava_stream_gen import prepare_logits_processor
 from llava.train.llava_trainer import PriorityAvailabilityAuxLoss
-
+import wandb
+import math
 def compute_loss(
     self,
     model,
@@ -318,7 +337,10 @@ def compute_loss(
     `priority` e `availability`, ottenute decodificando l’output JSON
     generato dal modello.
     """
+    aux_loss = 0
+    loss_without_alpha_coefficient = 0
     current_step = self.state.global_step
+    alpha = min(1.0, math.log(current_step + 1) / math.log(self.args.warmup_steps + 1))
     # --- Estrazione label ---
     if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
         labels = inputs.pop("labels")
@@ -372,7 +394,9 @@ def compute_loss(
         if isinstance(outputs, dict) and "loss" not in outputs:
             raise ValueError(f"Il modello non ha restituito una loss. Chiavi: {','.join(outputs.keys())}")
         loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
-
+        wandb.log({
+            "label_smoothing_loss": loss,
+        })
     # --- Parsing JSON da response e gt_response ---
     gt_priority = gt_availability = pred_priority = pred_availability = pred_logits_availability = None
 
@@ -403,11 +427,11 @@ def compute_loss(
                 pred_logits_availability = None
             else:
                 availability_str = match.group(1).replace("[", "").replace("]", "").replace(" ", "").replace(",", ", ").strip()
-                print(f"[DEBUG] availability_str: {availability_str}")
+                #print(f"[DEBUG] availability_str: {availability_str}")
                 availability_token_ids = tokenizer.convert_tokens_to_ids(
                     tokenizer.tokenize(availability_str)
                 )
-                print(f"[DEBUG] availability_token_ids: {availability_token_ids}")
+                #print(f"[DEBUG] availability_token_ids: {availability_token_ids}")
                 # Funzione per trovare la prima occorrenza di availability_token_ids in output_ids
                 def find_sublist_index(lst, sublst):
                     n, m = len(lst), len(sublst)
@@ -417,7 +441,9 @@ def compute_loss(
                     return -1
 
                 start_idx = find_sublist_index(output_ids, availability_token_ids)
-
+                if availability_str == "1":
+                    print(f"Debug: {start_idx}")
+                    start_idx = start_idx[1]
                 if start_idx == -1:
                     print("[WARNING] Sequenza token availability non trovata in output_ids")
                     pred_logits_availability = None
@@ -433,7 +459,7 @@ def compute_loss(
                             pred_logits_availability.append(logit_val)
                             print(f"[DEBUG] Logit token {token_id} ('{tokenizer.decode([token_id])}') idx {idx}: {logit_val}")
                         
-                    print(f"[DEBUG] Predicted Availability Logits: {pred_logits_availability}")
+                    #print(f"[DEBUG] Predicted Availability Logits: {pred_logits_availability}")
 
     except Exception as e:
         print(f"[WARNING] Parsing predizione fallito: {e}")
@@ -441,13 +467,67 @@ def compute_loss(
 
     # --- Loss aggiuntiva se parsing riuscito ---
     if all(v is not None for v in [gt_priority, gt_availability, pred_priority, pred_logits_availability]):
-        aux_loss_fn = PriorityAvailabilityAuxLoss(weight_priority=0.5, weight_availability=0.01)
+        aux_loss_fn = PriorityAvailabilityAuxLoss(weight_priority=0.25, weight_availability=1.0)
         aux_loss = aux_loss_fn(pred_priority, pred_logits_availability, gt_priority, gt_availability)
-        alpha = min(1.0, current_step / self.args.warmup_steps)
         print(f"[DEBUG] alpha: {alpha}")
         loss += alpha * aux_loss
-        print(f"[DEBUG] Additional loss (aux_loss): {aux_loss}")
+        loss_without_alpha_coefficient = loss - alpha * aux_loss
+        print(f"[DEBUG] Total loss: {loss}")
     else:
         print("[DEBUG] Salto aux_loss: parsing non riuscito o dati incompleti.")
+    wandb.log({
+            "auxiliary_loss": aux_loss,
+            "alpha": alpha,
+            "loss_with_alpha_coefficient": loss,
+            "loss_without_alpha_coefficient": loss_without_alpha_coefficient,
+        })
+    return (loss, outputs) if return_outputs else loss
+'''
+
+
+def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    """
+    How the loss is computed by Trainer. By default, all models return the loss in the first element.
+    Subclass and override for custom behavior.
+    """
+    if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
+        labels = inputs.pop("labels")
+    else:
+        labels = None
+    if num_items_in_batch is not None:
+        num_items_in_batch_tensor = torch.tensor(num_items_in_batch, device=self.args.device)
+        num_items_in_batch = int(self.accelerator.gather(num_items_in_batch_tensor).sum().cpu())
+    if self.model_accepts_loss_kwargs:
+        loss_kwargs = {}
+        if num_items_in_batch is not None:
+            loss_kwargs["num_items_in_batch"] = num_items_in_batch
+        inputs = {**inputs, **loss_kwargs}
+    outputs = model(**inputs)
+    # Save past state if it exists
+    # TODO: this needs to be fixed and made cleaner later.
+    if self.args.past_index >= 0:
+        self._past = outputs[self.args.past_index]
+
+    if labels is not None:
+        unwrapped_model = self.accelerator.unwrap_model(model)
+        if _is_peft_model(unwrapped_model):
+            model_name = unwrapped_model.base_model.model._get_name()
+        else:
+            model_name = unwrapped_model._get_name()
+        # User-defined compute_loss function
+        if self.compute_loss_func is not None:
+            loss = self.compute_loss_func(outputs, labels, num_items_in_batch=num_items_in_batch)
+        elif model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
+            loss = self.label_smoother(outputs, labels, shift_labels=True)
+        else:
+            loss = self.label_smoother(outputs, labels)
+    else:
+        if isinstance(outputs, dict) and "loss" not in outputs:
+            raise ValueError(
+                "The model did not return a loss from the inputs, only the following keys: "
+                f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
+            )
+        # We don't use .loss here since the model may return tuples instead of ModelOutput.
+        loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
 
     return (loss, outputs) if return_outputs else loss

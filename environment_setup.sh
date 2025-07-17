@@ -30,7 +30,7 @@ pip install triton==3.1.0
 # pip install numpy==1.26.4
 
 # Replace transformers and deepspeed files
-site_pkg_path=$(python -c 'import site; print(site.getsitepackages()[0])')
+site_pkg_path=$(python3 -c 'import site; print(site.getsitepackages()[0])')
 cp -rv ./llava/train/deepspeed_replace/* $site_pkg_path/deepspeed/
 
 # Downgrade protobuf to 3.20 for backward compatibility

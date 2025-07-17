@@ -54,7 +54,7 @@ from llava.train.utils import (
     vision_resolution_elevation,
 )
 from llava.trl.trainer.utils import DPODataCollatorWithPadding
-
+from llava.train.llava_trainer import compute_loss_func
 local_rank = None
 
 if "WANDB_PROJECT" not in os.environ:
@@ -836,7 +836,7 @@ def train():
         torch.cuda.memory_allocated() / 1024 / 1024 / 1024,
         flush=True,
     )
-
+    #trainer.compute_loss_func = compute_loss_func
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     if training_args.debug_e2e:

@@ -33,7 +33,8 @@ from transformers.trainer import get_parameter_names, has_length, is_sagemaker_m
 
 from llava.train.sequence_parallel import get_pg_manager
 from llava.trl.trainer import DPOTrainer
-
+import torch
+import torch.nn.functional as F
 
 def maybe_zero_3(param, ignore_status=False, name=None):
     from deepspeed import zero
@@ -853,7 +854,55 @@ class LLaVATrainer(Trainer):
                     json.dump(self.state.log_history, f, indent=4)
 
         self.control = self.callback_handler.on_log(self.args, self.state, self.control, logs)
-    import json
+
+
+def compute_loss_func(outputs, labels, num_items_in_batch=None):
+    DIGIT_TOKEN_IDS = set(range(15, 25))  # token dei numeri
+    logits = outputs.logits
+    vocab_size = logits.size(-1)
+    seq_len_logits = logits.size(1)
+    seq_len_labels = labels.size(1)
+    pad_len = seq_len_logits - seq_len_labels
+
+    if pad_len > 0:
+        pad_start = pad_len - 1  # tutti -100 all'inizio tranne uno
+        pad_end = 1              # un solo -100 alla fine
+        labels = F.pad(labels, (pad_start, pad_end), value=-100)
+    # Shift per language modeling: predici token i+1 da token i
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    # Appiattisci
+    shift_logits = shift_logits.view(-1, vocab_size)
+    shift_labels = shift_labels.view(-1)
+    shift_labels = shift_labels.to(shift_logits.device)
+
+    valid_mask = shift_labels != -100
+
+    # Maschera per token numerici
+    is_digit = torch.zeros_like(shift_labels, dtype=torch.bool)
+    for digit_id in DIGIT_TOKEN_IDS:
+        is_digit |= (shift_labels == digit_id)
+
+    weights = torch.ones_like(shift_labels, dtype=torch.float, device=shift_labels.device)
+    weights[is_digit] = 5
+    weights = weights * valid_mask
+
+    per_token_loss = F.cross_entropy(
+        shift_logits,
+        shift_labels,
+        reduction="none",
+        ignore_index=-100
+    )
+
+    weighted_loss = per_token_loss * weights
+
+    if num_items_in_batch is not None:
+        loss = weighted_loss.sum() / num_items_in_batch
+    else:
+        loss = weighted_loss.sum() / weights.sum().clamp(min=1.0)
+    return loss
+
+    
 '''
     def compute_loss(self, model, inputs, return_outputs=False):
         """
@@ -913,7 +962,7 @@ class LLaVATrainer(Trainer):
 
         return (loss, outputs) if return_outputs else loss'''
 
-
+'''
 import torch
 import torch.nn as nn
 
@@ -923,7 +972,7 @@ class PriorityAvailabilityAuxLoss(nn.Module):
         self.weight_priority = weight_priority
         self.weight_availability = weight_availability
         self.bce = nn.BCELoss()
-        self.rank_loss = nn.MarginRankingLoss(margin=1.0)
+        self.rank_loss = nn.MarginRankingLoss()
         self.pad_value = pad_value
 
     def forward(self, pred_priority_list, pred_availability_list, gt_priority_list, gt_availability_list):
@@ -938,24 +987,20 @@ class PriorityAvailabilityAuxLoss(nn.Module):
             pred_availability_list + [self.pad_value] * (max_len - len(pred_availability_list)),
             dtype=torch.float32, device=device
         )
-        print(f"[DEBUG] Predicted Availability Tensor: {pred_av_tensor}")
         gt_av_tensor = torch.tensor(
             gt_availability_list + [self.pad_value] * (max_len - len(gt_availability_list)),
             dtype=torch.float32, device=device
         )        
-        print(f"[DEBUG] Ground Truth Availability Tensor: {gt_av_tensor}")
         loss_avail += self.bce(pred_av_tensor, gt_av_tensor)
-        print(f"[DEBUG] Availability Loss: {loss_avail.item()}")
-        '''# Priority Loss
+        # Priority Loss
 
         # Assure that both lists have the same length
         if len(pred_priority_list) < len(gt_priority_list):
             pred_priority_list = pred_priority_list + [pid for pid in gt_priority_list if pid not in pred_priority_list]
 
         # Dictionary for ranks
-        pred_ranks = {tuple(pid): idx for idx, pid in enumerate(pred_priority_list)}
-        gt_ranks = {tuple(pid): idx for idx, pid in enumerate(gt_priority_list)}
-
+        pred_ranks = {pid: idx for idx, pid in enumerate(pred_priority_list)}
+        gt_ranks = {pid: idx for idx, pid in enumerate(gt_priority_list)}
         for i in range(len(gt_priority_list)):
             for j in range(i + 1, len(gt_priority_list)):
                 a, b = gt_priority_list[i], gt_priority_list[j]
@@ -964,18 +1009,24 @@ class PriorityAvailabilityAuxLoss(nn.Module):
                 # Compare ranks
                 gt_cmp = gt_ranks[a] < gt_ranks[b]
                 pred_cmp = pred_ranks.get(a, float('inf')) < pred_ranks.get(b, float('inf'))
-
+                print(f"[DEBUG] Comparing: {a} ({gt_ranks[a]}) vs {b} ({gt_ranks[b]}), gt_cmp: {gt_cmp}, pred_cmp: {pred_cmp}")
                 if gt_cmp != pred_cmp:
                     ra = torch.tensor([-float(pred_ranks.get(a, len(pred_priority_list)))], device=device)
                     rb = torch.tensor([-float(pred_ranks.get(b, len(pred_priority_list)))], device=device)
                     target = torch.tensor([1.0], device=device) if gt_cmp else torch.tensor([-1.0], device=device)
                     loss_rank += self.rank_loss(ra, rb, target)
 
-        # Computation of average losses'''
+        # Computation of average losses
         avg_loss_avail = loss_avail
         print(f"Average Availability Loss: {avg_loss_avail.item()}")
-        avg_loss_rank = 0
+        #avg_loss_rank = 0
         #avg_loss_rank = loss_rank / total_pairs if total_pairs > 0 else torch.tensor(0.0)
-        #print(f"Average Rank Loss: {avg_loss_rank.item()}")
+        #print(f"Average Rank Loss: {avg_loss_rank}")
         # Weighted total loss
-        return self.weight_priority * avg_loss_rank + self.weight_availability * avg_loss_avail
+        return  self.weight_availability * avg_loss_avail #+ self.weight_priority * avg_loss_rank'''
+
+
+
+    # Token ID dei numeri '0'...'9' nel tuo vocabolario
+
+
