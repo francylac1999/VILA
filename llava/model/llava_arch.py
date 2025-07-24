@@ -470,6 +470,10 @@ class LlavaMetaForCausalLM(ABC):
     ) -> Dict[str, List[torch.Tensor]]:
         embeds = defaultdict(deque)
         for name in media:
+            if name not in self.encoders:
+                continue
+            if not media[name]:  # controlla che non sia None o lista vuota
+                continue
             if self.training:
                 # Gather metainfo of media objects from all ranks
                 info = [{"shape": tensor.shape, "dtype": tensor.dtype} for tensor in media.get(name, [])]

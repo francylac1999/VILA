@@ -248,7 +248,7 @@ def training_step(
 
     return loss.detach() / self.args.gradient_accumulation_steps
 
-"""
+
 def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
 
     if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
@@ -263,8 +263,6 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
         if num_items_in_batch is not None:
             loss_kwargs["num_items_in_batch"] = num_items_in_batch
         inputs = {**inputs, **loss_kwargs}
-        print(inputs.keys())
-
     outputs = model(**inputs)
     '''print(f"debugoutputs.logits: {outputs.logits}")
     print(f"debuglabels: {labels}")
@@ -312,7 +310,46 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
         loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
 
     return (loss, outputs) if return_outputs else loss
-"""
+
+from tinychat.evaluator.evaluator import extract_json_block
+from tinychat.evaluator.evaluator import elaborate_predictions_and_gt
+
+def compute_metrics(eval_pred):
+    """
+    Dummy compute_metrics function for compatibility.
+    """
+    predictions, labels = eval_pred.predictions, eval_pred.label_ids
+    pred_ids = np.argmax(logits, axis=-1)
+
+    preds_str = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+    labels_str = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+    resp_clean = [extract_json_block(p) for p in preds_str]
+    labels_clean = [extract_json_block(l) for l in labels_str]
+
+    # A questo punto hai due liste parallele di stringhe JSON
+    pred_dicts, gt_dicts = elaborate_predictions_and_gt(resp_clean, labels_clean)
+
+    # Costruisci l’evaluator e calcola tutte le metriche
+    evaluator = Evaluator(pred_dicts, gt_dicts)
+    metrics = evaluator.evaluate()
+
+    # Piatta il dizionario (es. nested → flat per HuggingFace Trainer)
+    flat_metrics = {
+        "mean_kendall_tau": metrics["mean_kendall_tau"],
+        "availability_accuracy": metrics["availability_accuracy"],
+        "precision": metrics["precision_recall_f1"]["precision"],
+        "recall": metrics["precision_recall_f1"]["recall"],
+        "f1_score": metrics["precision_recall_f1"]["f1_score"],
+        "true_positive": metrics["precision_recall_f1"]["true_positive"],
+        "false_positive": metrics["precision_recall_f1"]["false_positive"],
+        "false_negative": metrics["precision_recall_f1"]["false_negative"],
+        "true_negative": metrics["precision_recall_f1"]["true_negative"],
+        "missed_predictions": metrics["precision_recall_f1"]["missed_predictions"],
+        "over_predictions": metrics["precision_recall_f1"]["over_predictions"]
+    }
+
+    return flat_metrics
 
 
 '''
@@ -484,7 +521,7 @@ def compute_loss(
     return (loss, outputs) if return_outputs else loss
 '''
 
-
+'''
 def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
     """
     How the loss is computed by Trainer. By default, all models return the loss in the first element.
@@ -530,4 +567,4 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
         # We don't use .loss here since the model may return tuples instead of ModelOutput.
         loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
 
-    return (loss, outputs) if return_outputs else loss
+    return (loss, outputs) if return_outputs else loss'''

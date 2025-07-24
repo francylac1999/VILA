@@ -55,6 +55,7 @@ from llava.train.utils import (
 )
 from llava.trl.trainer.utils import DPODataCollatorWithPadding
 from llava.train.llava_trainer import compute_loss_func
+
 local_rank = None
 
 if "WANDB_PROJECT" not in os.environ:
@@ -424,7 +425,8 @@ def train():
 
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
+    print(f"Data arguments: {data_args}")
+    print(f"Training arguments: {training_args}")
     # FIXME(zhijianl): This should be deprecated when we move to the new scripts.
     if os.getenv("RUN_NAME") is not None:
         training_args.run_name = os.getenv("RUN_NAME")
@@ -787,7 +789,7 @@ def train():
         data_args=data_args,
         training_args=training_args,
     )
-
+    print(f"Debug: {data_module}")
     # Add a training step_end callback to check whether to autosuspend.
     callbacks = [AutoResumeCallback(), TimeoutTerminateCallback()]
 
@@ -836,7 +838,7 @@ def train():
         torch.cuda.memory_allocated() / 1024 / 1024 / 1024,
         flush=True,
     )
-    #trainer.compute_loss_func = compute_loss_func
+    trainer.compute_loss_func = compute_loss_func
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     if training_args.debug_e2e:

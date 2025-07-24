@@ -1552,7 +1552,9 @@ def make_supervised_data_module(
     from .builder import build_dataset
 
     train_dataset = build_dataset(data_args.data_mixture, data_args, training_args, tokenizer)
+    eval_dataset = build_dataset(data_args.eval_data_mixture, data_args, training_args, tokenizer)
     training_args.sample_lens = [len(d) for d in train_dataset.datasets]
+    training_args.eval_sample_lens = [len(d) for d in eval_dataset.datasets]
 
     PROCESS_GROUP_MANAGER = get_pg_manager()
     if PROCESS_GROUP_MANAGER is None:
@@ -1574,6 +1576,7 @@ def make_supervised_data_module(
 
     return dict(
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
     )
 

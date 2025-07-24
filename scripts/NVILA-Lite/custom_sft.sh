@@ -1,12 +1,13 @@
 #!/bin/bash
 
-DEFAULT_RUN_NAME="NVILA-Lite-2B-finetune-efficient-3-epochs-PIC4SER"
+DEFAULT_RUN_NAME="NVILA-Lite-2B-finetune-efficient-4-epochs-PIC4SER-with-eval-weighted-loss-5"
 DEFAULT_GLOBAL_TRAIN_BATCH_SIZE=1
 DEFAULT_GRADIENT_ACCUMULATION_STEPS=1
 
 STAGE_PATH=${1:-"/home/workspace/NVILA-Lite-2B"}
 DATA_MIXTURE=${2:-"PIC4SER+PIC4SER_1"}
 OUTPUT_DIR=${3:-"/home/workspace/runs/train/$DEFAULT_RUN_NAME"}
+EVAL_DATA_MIXTURE=${4:-"PIC4SER_EVAL+PIC4SER_EVAL_1"}
 
 source /home/workspace/VILA/scripts/setups/custom_train.sh
 
@@ -17,6 +18,7 @@ torchrun \
         --deepspeed /home/workspace/VILA/scripts/zero3.json \
         --model_name_or_path $STAGE_PATH \
         --data_mixture $DATA_MIXTURE \
+        --eval_data_mixture $EVAL_DATA_MIXTURE \
         --vision_tower Efficient-Large-Model/paligemma-siglip-so400m-patch14-448 \
         --mm_vision_select_feature cls_patch \
         --mm_projector mlp_downsample_3x3_fix \
@@ -35,10 +37,13 @@ torchrun \
         --image_aspect_ratio dynamic \
         --bf16 True \
         --output_dir $OUTPUT_DIR/model \
-        --num_train_epochs 3 \
+        --num_train_epochs 4 \
         --per_device_train_batch_size 1 \
+        --per_device_eval_batch_size 1 \
         --gradient_accumulation_steps 1 \
-        --evaluation_strategy no \
+        --evaluation_strategy epoch \
+        --eval_accumulation_steps 1 \
+        --prediction_loss_only True \
         --save_strategy steps \
         --save_steps 100 \
         --save_total_limit 1 \

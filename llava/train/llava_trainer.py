@@ -856,6 +856,7 @@ class LLaVATrainer(Trainer):
         self.control = self.callback_handler.on_log(self.args, self.state, self.control, logs)
 
 
+
 def compute_loss_func(outputs, labels, num_items_in_batch=None):
     DIGIT_TOKEN_IDS = set(range(15, 25))  # token dei numeri
     logits = outputs.logits
