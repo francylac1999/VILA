@@ -859,6 +859,7 @@ class LLaVATrainer(Trainer):
 
 def compute_loss_func(outputs, labels, num_items_in_batch=None):
     DIGIT_TOKEN_IDS = set(range(15, 25))  # token dei numeri
+    CLOSING_BRACE_TOKEN_ID = 335  # token di chiusura della parentesi graffa
     logits = outputs.logits
     vocab_size = logits.size(-1)
     seq_len_logits = logits.size(1)
@@ -876,17 +877,24 @@ def compute_loss_func(outputs, labels, num_items_in_batch=None):
     shift_logits = shift_logits.view(-1, vocab_size)
     shift_labels = shift_labels.view(-1)
     shift_labels = shift_labels.to(shift_logits.device)
-
     valid_mask = shift_labels != -100
+    closing_brace_pos = (shift_labels == CLOSING_BRACE_TOKEN_ID).nonzero(as_tuple=True)[0]
+    print(f"Closing brace positions: {closing_brace_pos}")
+    cutoff = closing_brace_pos[0].item() + 1 if len(closing_brace_pos) > 0 else len(shift_labels)
 
     # Maschera per token numerici
     is_digit = torch.zeros_like(shift_labels, dtype=torch.bool)
     for digit_id in DIGIT_TOKEN_IDS:
         is_digit |= (shift_labels == digit_id)
+    
+    is_digit[cutoff:] = False 
 
     weights = torch.ones_like(shift_labels, dtype=torch.float, device=shift_labels.device)
-    weights[is_digit] = 5
+    weights[is_digit] = 8
+
     weights = weights * valid_mask
+    print(weights[is_digit].sum().item(), "weights sum")
+    #print(f"Token weights: {weights.tolist()}")
 
     per_token_loss = F.cross_entropy(
         shift_logits,
@@ -896,7 +904,6 @@ def compute_loss_func(outputs, labels, num_items_in_batch=None):
     )
 
     weighted_loss = per_token_loss * weights
-
     if num_items_in_batch is not None:
         loss = weighted_loss.sum() / num_items_in_batch
     else:
