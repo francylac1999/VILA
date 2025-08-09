@@ -838,7 +838,7 @@ def train():
         torch.cuda.memory_allocated() / 1024 / 1024 / 1024,
         flush=True,
     )
-    trainer.compute_loss_func = compute_loss_func
+    #trainer.compute_loss_func = compute_loss_func
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     if training_args.debug_e2e:

@@ -11,11 +11,15 @@ PIC4SER_1:
     _target_: llava.data.LLaVADataset
     data_path: /home/workspace/social_interaction_dataset_1/flattened_dataset_training/dataset.json
     media_dir: /home/workspace/social_interaction_dataset_1/flattened_dataset_training/images
-PIC4SER_EVAL:
+PIC4SER_2_new:
     _target_: llava.data.LLaVADataset
-    data_path: /home/workspace/social_interaction_dataset/flattened_dataset_eval/dataset.json
-    media_dir: /home/workspace/social_interaction_dataset/flattened_dataset_eval/images
-PIC4SER_EVAL_1:
-    _target_: llava.data.LLaVADataset
-    data_path: /home/workspace/social_interaction_dataset_1/flattened_dataset_eval/dataset.json
-    media_dir: /home/workspace/social_interaction_dataset_1/flattened_dataset_eval/images
+    data_path: /home/workspace/social_interaction_dataset_2_new/flattened_dataset_training/dataset.json
+    media_dir: /home/workspace/social_interaction_dataset_2_new/flattened_dataset_training/images
+#PIC4SER_EVAL:
+#    _target_: llava.data.LLaVADataset
+#    data_path: /home/workspace/social_interaction_dataset/flattened_dataset_eval/dataset.json
+#    media_dir: /home/workspace/social_interaction_dataset/flattened_dataset_eval/images
+#PIC4SER_EVAL_1:
+#    _target_: llava.data.LLaVADataset
+#    data_path: /home/workspace/social_interaction_dataset_1/flattened_dataset_eval/dataset.json
+#    media_dir: /home/workspace/social_interaction_dataset_1/flattened_dataset_eval/images
